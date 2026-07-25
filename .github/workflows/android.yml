@@ -1,0 +1,74 @@
+name: Seer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        run: |
+          wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip -q android-ndk-r26d-linux.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+
+      - name: Download sse2neon Header
+        run: |
+          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o include/sse2neon.h
+
+      - name: Patch SIMD headers for ARM
+        run: |
+          python3 -c '
+          import os
+
+          def patch_file(path):
+              with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                  content = f.read()
+              original = content
+
+              if "<x86intrin.h>" in content:
+                  content = content.replace("<x86intrin.h>", "\"sse2neon.h\"")
+
+              if content != original:
+                  with open(path, "w", encoding="utf-8") as f:
+                      f.write(content)
+                  print(f"Patched: {path}")
+
+          for root, dirs, files in os.walk("include"):
+              for file in files:
+                  if file.endswith((".h", ".hpp", ".cpp", ".c", ".cc")):
+                      patch_file(os.path.join(root, file))
+          '
+
+      - name: Build
+        run: |
+          cd src
+          make CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++ \
+               CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-ops-limit=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic --target=aarch64-linux-android28 -march=armv8-a+simd -static-libstdc++" \
+               LDFLAGS="-lpthread"
+
+      - name: List build output
+        run: |
+          find src -maxdepth 1 -type f -executable
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seer-android-arm64
+          path: src/seer
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-build-${{ github.run_number }}
+          name: Seer Build ${{ github.run_number }}
+          prerelease: true
+          files: src/seer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
