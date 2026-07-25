@@ -29,7 +29,7 @@ jobs:
 
       - name: Download sse2neon Header
         run: |
-          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o seer-nnue/include/sse2neon.h
+          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o include/sse2neon.h
 
       - name: Patch SIMD headers for ARM
         run: |
@@ -49,7 +49,7 @@ jobs:
                       f.write(content)
                   print(f"Patched: {path}")
 
-          for root, dirs, files in os.walk("seer-nnue/include"):
+          for root, dirs, files in os.walk("include"):
               for file in files:
                   if file.endswith((".h", ".hpp", ".cpp", ".c", ".cc")):
                       patch_file(os.path.join(root, file))
