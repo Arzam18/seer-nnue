@@ -68,15 +68,16 @@ jobs:
                CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic --target=aarch64-linux-android28 -march=armv8-a+simd -static-libstdc++" \
                LDFLAGS="-lpthread" 2>&1 | tail -80
 
-      - name: List build output
+      - name: Find binary
         run: |
-          find "$MAKEFILE_DIR" -maxdepth 1 -type f -executable
+          find . -maxdepth 4 -iname "seer" -type f
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: seer-android-arm64
-          path: ${{ env.MAKEFILE_DIR }}/seer
+          path: |
+            **/seer
 
       - name: Create prerelease
         uses: softprops/action-gh-release@v2
@@ -84,6 +85,7 @@ jobs:
           tag_name: android-build-${{ github.run_number }}
           name: Seer Build ${{ github.run_number }}
           prerelease: true
-          files: ${{ env.MAKEFILE_DIR }}/seer
+          files: |
+            **/seer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
