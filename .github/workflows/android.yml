@@ -55,6 +55,11 @@ jobs:
                       patch_file(os.path.join(root, file))
           '
 
+      - name: Patch attribute ordering for Clang
+        run: |
+          sed -i 's/__attribute__((no_sanitize("thread"))) \[\[maybe_unused\]\] transposition_table\& insert/[[maybe_unused]] __attribute__((no_sanitize("thread"))) transposition_table\& insert/' include/search/transposition_table.h
+          sed -i 's/__attribute__((no_sanitize("thread"))) \[\[nodiscard\]\] std::optional<transposition_table_entry> find/[[nodiscard]] __attribute__((no_sanitize("thread"))) std::optional<transposition_table_entry> find/' include/search/transposition_table.h
+
       - name: Build
         run: |
           cd "$MAKEFILE_DIR"
