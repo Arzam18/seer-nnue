@@ -30,6 +30,7 @@ jobs:
 
       - name: Download sse2neon Header
         run: |
+          mkdir -p include
           curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o include/sse2neon.h
 
       - name: Patch SIMD headers for ARM
@@ -66,18 +67,26 @@ jobs:
           cd "$MAKEFILE_DIR"
           make CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++ \
                CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic --target=aarch64-linux-android28 -march=armv8-a+simd -static-libstdc++" \
-               LDFLAGS="-lpthread" 2>&1 | tail -80
+               LDFLAGS="-lpthread"
 
-      - name: Find binary
+      - name: Locate and Move Binary
         run: |
-          find . -maxdepth 4 -iname "seer" -type f
+          mkdir -p dist
+          BINARY_PATH=$(find . -maxdepth 5 -iname "seer" -type f ! -path "*/.*")
+          if [ -z "$BINARY_PATH" ]; then
+            echo "Error: Seer binary could not be found after compilation."
+            exit 1
+          fi
+          echo "Found binary at: $BINARY_PATH"
+          cp "$BINARY_PATH" dist/seer
+          chmod +x dist/seer
+          ls -la dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: seer-android-arm64
-          path: |
-            **/seer
+          path: dist/seer
 
       - name: Create prerelease
         uses: softprops/action-gh-release@v2
@@ -85,7 +94,4 @@ jobs:
           tag_name: android-build-${{ github.run_number }}
           name: Seer Build ${{ github.run_number }}
           prerelease: true
-          files: |
-            **/seer
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          files: dist/seer
