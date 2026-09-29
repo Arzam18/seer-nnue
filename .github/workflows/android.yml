@@ -30,7 +30,7 @@ jobs:
           echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> "$GITHUB_ENV"
 
       # ============================================================
-      # DOWNLOAD SEER NNUE
+      # DOWNLOAD NNUE
       # ============================================================
       - name: Download Seer NNUE
         run: |
@@ -52,45 +52,39 @@ jobs:
             -o include/sse2neon.h
 
       # ============================================================
-      # PATCH SIMD HEADERS FOR ARM
+      # PATCH SIMD HEADERS
       # ============================================================
       - name: Patch SIMD headers for ARM
         run: |
           python3 - <<'PY'
           import os
 
-          def patch_file(path):
-              with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                  content = f.read()
-
-              original = content
-
-              if "<x86intrin.h>" in content:
-                  content = content.replace(
-                      "<x86intrin.h>",
-                      "\"sse2neon.h\""
-                  )
-
-              if content != original:
-                  with open(path, "w", encoding="utf-8") as f:
-                      f.write(content)
-
-                  print(f"Patched: {path}")
-
           for root, dirs, files in os.walk("include"):
               for file in files:
-                  if file.endswith((
-                      ".h",
-                      ".hpp",
-                      ".cpp",
-                      ".c",
-                      ".cc"
-                  )):
-                      patch_file(os.path.join(root, file))
+                  if not file.endswith((".h", ".hpp", ".cpp", ".c", ".cc")):
+                      continue
+
+                  path = os.path.join(root, file)
+
+                  with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                      content = f.read()
+
+                  original = content
+
+                  content = content.replace(
+                      "<x86intrin.h>",
+                      '"sse2neon.h"'
+                  )
+
+                  if content != original:
+                      with open(path, "w", encoding="utf-8") as f:
+                          f.write(content)
+
+                      print("Patched:", path)
           PY
 
       # ============================================================
-      # PATCH CLANG ATTRIBUTE ORDER
+      # PATCH CLANG ATTRIBUTES
       # ============================================================
       - name: Patch attribute ordering for Clang
         run: |
@@ -103,7 +97,7 @@ jobs:
             include/search/transposition_table.h
 
       # ============================================================
-      # BUILD ANDROID ARM64 NEON
+      # BUILD
       # ============================================================
       - name: Build Seer ARM64 NEON
         run: |
@@ -115,58 +109,58 @@ jobs:
 
           make \
             CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" \
-            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -Wall -Wextra -pedantic -march=armv8-a+simd -fopenmp-simd" \
+            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic -march=armv8-a+simd -fopenmp-simd" \
             LDFLAGS="-lpthread" \
             2>&1 | tee ../seer-build.log
 
       # ============================================================
-      # VERIFY BUILD
+      # VERIFY BINARY
       # ============================================================
-      - name: Verify ARM64 binary
+      - name: Verify binary
         run: |
           set -e
 
-          echo "Checking generated binary..."
-
-          ls -lh build/seer
-
-          file build/seer
+          echo "Generated files:"
+          find build -maxdepth 1 -type f -ls
 
           if [ ! -f build/seer ]; then
             echo "ERROR: build/seer was not created."
             exit 1
           fi
 
-          if [ ! -x build/seer ]; then
-            echo "ERROR: build/seer is not executable."
-            exit 1
-          fi
+          chmod +x build/seer
 
-          echo "Build successful."
+          echo
+          echo "Binary:"
+          ls -lh build/seer
+
+          echo
+          echo "File type:"
+          file build/seer
 
       # ============================================================
-      # TEST ELF ARCHITECTURE
+      # VERIFY ARM64
       # ============================================================
-      - name: Verify ARM64 ELF
+      - name: Verify ARM64
         run: |
           set -e
 
           file build/seer
 
           if ! file build/seer | grep -Eiq 'ARM aarch64|ARM64'; then
-            echo "ERROR: Binary is not recognized as ARM64."
+            echo "ERROR: Binary is not ARM64."
             exit 1
           fi
 
+          echo "ARM64 verification successful."
+
       # ============================================================
-      # PACKAGE SINGLE BINARY
+      # PREPARE SINGLE-BINARY ARTIFACT
       # ============================================================
       - name: Prepare artifact
         run: |
           mkdir -p artifact
-
           cp build/seer artifact/seer
-
           chmod +x artifact/seer
 
           ls -lh artifact/seer
