@@ -196,11 +196,11 @@ struct transposition_table {
   void resize(const std::size_t& size) noexcept;
   void update_gen() noexcept;
 
-  __attribute__((no_sanitize("thread"))) [[maybe_unused]] transposition_table& insert(
+  [[maybe_unused]] __attribute__((no_sanitize("thread"))) transposition_table& insert(
       const zobrist::hash_type& key,
       const transposition_table_entry& entry) noexcept;
 
-  __attribute__((no_sanitize("thread"))) [[nodiscard]] std::optional<transposition_table_entry> find(const zobrist::hash_type& key) noexcept;
+  [[nodiscard]] __attribute__((no_sanitize("thread"))) std::optional<transposition_table_entry> find(const zobrist::hash_type& key) noexcept;
 
   explicit transposition_table(const std::size_t& size) noexcept : data(size * one_mb) {}
 };
