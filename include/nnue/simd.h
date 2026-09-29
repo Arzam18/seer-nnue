@@ -36,7 +36,11 @@ namespace simd {
 #if defined(_WIN32)
   return _mm_malloc(size, alignment);
 #else
-  return std::aligned_alloc(alignment, size);
+  void* ptr = nullptr;
+  if (posix_memalign(&ptr, alignment, size) != 0) {
+    return nullptr;
+  }
+  return ptr;
 #endif
 }
 
