@@ -12,31 +12,51 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      # ============================================================
+      # CHECKOUT
+      # ============================================================
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
           submodules: recursive
 
+      # ============================================================
+      # INSTALL ANDROID NDK
+      # ============================================================
       - name: Install Android NDK
         run: |
-          wget -q https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
-          unzip -q android-ndk-r26d-linux.zip
-          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26d" >> $GITHUB_ENV
+          wget -q https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
+          unzip -q android-ndk-r27c-linux.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r27c" >> "$GITHUB_ENV"
 
-      - name: Locate Makefile
+      # ============================================================
+      # DOWNLOAD SEER NNUE
+      # ============================================================
+      - name: Download Seer NNUE
         run: |
-          MAKEFILE_PATH=$(find . -iname "makefile" | head -n 1)
-          echo "Found makefile at: $MAKEFILE_PATH"
+          mkdir -p build/weights
 
-          MAKEFILE_DIR=$(dirname "$MAKEFILE_PATH")
-          echo "MAKEFILE_DIR=$MAKEFILE_DIR" >> $GITHUB_ENV
+          wget -q \
+            -O build/weights/q0x2291e0ff.bin \
+            https://github.com/connormcmonigle/seer-training/releases/download/0x2291e0ff/q0x2291e0ff.bin
 
+          ls -lh build/weights/q0x2291e0ff.bin
+
+      # ============================================================
+      # DOWNLOAD SSE2NEON
+      # ============================================================
       - name: Download sse2neon Header
         run: |
-          curl -sL https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h -o include/sse2neon.h
+          curl -L \
+            https://raw.githubusercontent.com/DLTcollab/sse2neon/master/sse2neon.h \
+            -o include/sse2neon.h
 
+      # ============================================================
+      # PATCH SIMD HEADERS FOR ARM
+      # ============================================================
       - name: Patch SIMD headers for ARM
         run: |
-          python3 -c '
+          python3 - <<'PY'
           import os
 
           def patch_file(path):
@@ -46,53 +66,130 @@ jobs:
               original = content
 
               if "<x86intrin.h>" in content:
-                  content = content.replace("<x86intrin.h>", "\"sse2neon.h\"")
+                  content = content.replace(
+                      "<x86intrin.h>",
+                      "\"sse2neon.h\""
+                  )
 
               if content != original:
                   with open(path, "w", encoding="utf-8") as f:
                       f.write(content)
+
                   print(f"Patched: {path}")
 
           for root, dirs, files in os.walk("include"):
               for file in files:
-                  if file.endswith((".h", ".hpp", ".cpp", ".c", ".cc")):
+                  if file.endswith((
+                      ".h",
+                      ".hpp",
+                      ".cpp",
+                      ".c",
+                      ".cc"
+                  )):
                       patch_file(os.path.join(root, file))
-          '
+          PY
 
+      # ============================================================
+      # PATCH CLANG ATTRIBUTE ORDER
+      # ============================================================
       - name: Patch attribute ordering for Clang
         run: |
-          sed -i 's/__attribute__((no_sanitize("thread"))) \[\[maybe_unused\]\] transposition_table\& insert/[[maybe_unused]] __attribute__((no_sanitize("thread"))) transposition_table\& insert/' include/search/transposition_table.h
+          sed -i \
+            's/__attribute__((no_sanitize("thread"))) \[\[maybe_unused\]\] transposition_table\& insert/[[maybe_unused]] __attribute__((no_sanitize("thread"))) transposition_table\& insert/' \
+            include/search/transposition_table.h
 
-          sed -i 's/__attribute__((no_sanitize("thread"))) \[\[nodiscard\]\] std::optional<transposition_table_entry> find/[[nodiscard]] __attribute__((no_sanitize("thread"))) std::optional<transposition_table_entry> find/' include/search/transposition_table.h
+          sed -i \
+            's/__attribute__((no_sanitize("thread"))) \[\[nodiscard\]\] std::optional<transposition_table_entry> find/[[nodiscard]] __attribute__((no_sanitize("thread"))) std::optional<transposition_table_entry> find/' \
+            include/search/transposition_table.h
 
-      - name: Build
+      # ============================================================
+      # BUILD ANDROID ARM64 NEON
+      # ============================================================
+      - name: Build Seer ARM64 NEON
         run: |
-          cd "$MAKEFILE_DIR"
+          set -o pipefail
+
+          cd build
+
+          make clean || true
 
           make \
-            CXX=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android28-clang++ \
-            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -Wall -Wextra -pedantic --target=aarch64-linux-android28 -march=armv8-a+simd -fopenmp-simd" \
+            CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" \
+            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -Wall -Wextra -pedantic -march=armv8-a+simd -fopenmp-simd" \
             LDFLAGS="-lpthread" \
-            2>&1 | tail -80
+            2>&1 | tee ../seer-build.log
 
-      - name: Verify binary
+      # ============================================================
+      # VERIFY BUILD
+      # ============================================================
+      - name: Verify ARM64 binary
         run: |
-          find . -maxdepth 4 -iname "seer" -type f
+          set -e
 
+          echo "Checking generated binary..."
+
+          ls -lh build/seer
+
+          file build/seer
+
+          if [ ! -f build/seer ]; then
+            echo "ERROR: build/seer was not created."
+            exit 1
+          fi
+
+          if [ ! -x build/seer ]; then
+            echo "ERROR: build/seer is not executable."
+            exit 1
+          fi
+
+          echo "Build successful."
+
+      # ============================================================
+      # TEST ELF ARCHITECTURE
+      # ============================================================
+      - name: Verify ARM64 ELF
+        run: |
+          set -e
+
+          file build/seer
+
+          if ! file build/seer | grep -Eiq 'ARM aarch64|ARM64'; then
+            echo "ERROR: Binary is not recognized as ARM64."
+            exit 1
+          fi
+
+      # ============================================================
+      # PACKAGE SINGLE BINARY
+      # ============================================================
+      - name: Prepare artifact
+        run: |
+          mkdir -p artifact
+
+          cp build/seer artifact/seer
+
+          chmod +x artifact/seer
+
+          ls -lh artifact/seer
+
+      # ============================================================
+      # UPLOAD ARTIFACT
+      # ============================================================
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: seer-android-arm64
-          path: |
-            **/seer
+          name: seer-android-arm64-neon
+          path: artifact/seer
+          if-no-files-found: error
 
+      # ============================================================
+      # CREATE PRERELEASE
+      # ============================================================
       - name: Create prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: android-build-${{ github.run_number }}
-          name: Seer Build ${{ github.run_number }}
+          name: Seer Android ARM64 NEON Build ${{ github.run_number }}
           prerelease: true
-          files: |
-            **/seer
+          files: artifact/seer
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
