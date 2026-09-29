@@ -17,8 +17,13 @@
 
 #pragma once
 
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#else
 #include <x86intrin.h>
+#endif
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -61,7 +66,9 @@ struct vector_128 {
 };
 #endif
 
-#if defined(__AVX2__)
+#if defined(__aarch64__) && defined(__ARM_NEON)
+constexpr std::size_t alignment = 16;
+#elif defined(__AVX2__)
 constexpr std::size_t alignment = vector_256::size;
 #elif defined(__SSSE3__)
 constexpr std::size_t alignment = vector_128::size;
@@ -139,7 +146,184 @@ inline void crelu255_matrix_vector_product(const T0* matrix, const T1* input, T2
   }
 }
 
-#if defined(__AVX2__)
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+
+// ============================================================================
+// AArch64 NEON
+// ============================================================================
+//
+// Seer's quantized NNUE path uses int16 accumulators, int8 weights and int32
+// outputs.  The original implementation only provided x86 SSE/AVX kernels,
+// which caused ARM builds to fall back to scalar loops.  These kernels keep
+// the same arithmetic semantics while using native AArch64 NEON intrinsics.
+
+template <std::size_t dim>
+struct int16_add_neon {
+  static constexpr std::size_t num_units = 8;
+  static constexpr bool available = divides<dim, num_units>;
+
+  static inline void f(std::int16_t* a, const std::int16_t* b) noexcept {
+    for (std::size_t i = 0; i < dim; i += num_units) {
+      const int16x8_t av = vld1q_s16(a + i);
+      const int16x8_t bv = vld1q_s16(b + i);
+      vst1q_s16(a + i, vaddq_s16(av, bv));
+    }
+  }
+};
+
+template <std::size_t dim>
+inline void add(std::int16_t* a, const std::int16_t* b) noexcept {
+  return overload_set<int16_add_neon<dim>>::f(a, b);
+}
+
+template <std::size_t dim>
+struct int16_sub_neon {
+  static constexpr std::size_t num_units = 8;
+  static constexpr bool available = divides<dim, num_units>;
+
+  static inline void f(std::int16_t* a, const std::int16_t* b) noexcept {
+    for (std::size_t i = 0; i < dim; i += num_units) {
+      const int16x8_t av = vld1q_s16(a + i);
+      const int16x8_t bv = vld1q_s16(b + i);
+      vst1q_s16(a + i, vsubq_s16(av, bv));
+    }
+  }
+};
+
+template <std::size_t dim>
+inline void sub(std::int16_t* a, const std::int16_t* b) noexcept {
+  return overload_set<int16_sub_neon<dim>>::f(a, b);
+}
+
+template <std::size_t dim>
+struct int16_add_add_sub_neon {
+  static constexpr std::size_t num_units = 8;
+  static constexpr bool available = divides<dim, num_units>;
+
+  static inline void f(
+      const std::int16_t* a_0,
+      const std::int16_t* a_1,
+      const std::int16_t* s_0,
+      std::int16_t* out) noexcept {
+    for (std::size_t i = 0; i < dim; i += num_units) {
+      const int16x8_t av0 = vld1q_s16(a_0 + i);
+      const int16x8_t av1 = vld1q_s16(a_1 + i);
+      const int16x8_t sv0 = vld1q_s16(s_0 + i);
+      vst1q_s16(out + i, vsubq_s16(vaddq_s16(av0, av1), sv0));
+    }
+  }
+};
+
+template <std::size_t dim>
+inline void add_add_sub(
+    const std::int16_t* a_0,
+    const std::int16_t* a_1,
+    const std::int16_t* s_0,
+    std::int16_t* out) noexcept {
+  return overload_set<int16_add_add_sub_neon<dim>>::f(a_0, a_1, s_0, out);
+}
+
+template <std::size_t dim>
+struct int16_add_add_sub_sub_neon {
+  static constexpr std::size_t num_units = 8;
+  static constexpr bool available = divides<dim, num_units>;
+
+  static inline void f(
+      const std::int16_t* a_0,
+      const std::int16_t* a_1,
+      const std::int16_t* s_0,
+      const std::int16_t* s_1,
+      std::int16_t* out) noexcept {
+    for (std::size_t i = 0; i < dim; i += num_units) {
+      const int16x8_t av0 = vld1q_s16(a_0 + i);
+      const int16x8_t av1 = vld1q_s16(a_1 + i);
+      const int16x8_t sv0 = vld1q_s16(s_0 + i);
+      const int16x8_t sv1 = vld1q_s16(s_1 + i);
+      vst1q_s16(out + i, vaddq_s16(vsubq_s16(av0, sv0), vsubq_s16(av1, sv1)));
+    }
+  }
+};
+
+template <std::size_t dim>
+inline void add_add_sub_sub(
+    const std::int16_t* a_0,
+    const std::int16_t* a_1,
+    const std::int16_t* s_0,
+    const std::int16_t* s_1,
+    std::int16_t* out) noexcept {
+  return overload_set<int16_add_add_sub_sub_neon<dim>>::f(a_0, a_1, s_0, s_1, out);
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void relu_matrix_vector_product(const float* matrix, const float* input, float* output) noexcept {
+  static_assert(dim0 % 4 == 0);
+  const float32x4_t zero = vdupq_n_f32(0.0f);
+
+  for (std::size_t i = 0; i < dim1; ++i) {
+    float32x4_t sum = vdupq_n_f32(0.0f);
+
+    for (std::size_t j = 0; j < dim0; j += 4) {
+      const float32x4_t x = vmaxq_f32(zero, vld1q_f32(input + j));
+      const float32x4_t w = vld1q_f32(matrix + i * dim0 + j);
+      sum = vaddq_f32(sum, vmulq_f32(w, x));
+    }
+
+    output[i] += vaddvq_f32(sum);
+  }
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void relu_matrix_vector_product(
+    const std::int16_t* matrix,
+    const std::int16_t* input,
+    std::int32_t* output) noexcept {
+  static_assert(dim0 % 8 == 0);
+  const int16x8_t zero = vdupq_n_s16(0);
+
+  for (std::size_t i = 0; i < dim1; ++i) {
+    int32x4_t sum = vdupq_n_s32(0);
+
+    for (std::size_t j = 0; j < dim0; j += 8) {
+      const int16x8_t x = vmaxq_s16(zero, vld1q_s16(input + j));
+      const int16x8_t w = vld1q_s16(matrix + i * dim0 + j);
+      const int16x8_t product = vmulq_s16(w, x);
+      sum = vaddq_s32(sum, vaddl_s16(vget_low_s16(product), vget_high_s16(product)));
+    }
+
+    output[i] += vaddvq_s32(sum);
+  }
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void crelu255_matrix_vector_product(
+    const std::int8_t* matrix,
+    const std::int16_t* input,
+    std::int32_t* output) noexcept {
+  static_assert(dim0 % 8 == 0);
+
+  const int16x8_t zero = vdupq_n_s16(0);
+  const int16x8_t max_value = vdupq_n_s16(255);
+
+  for (std::size_t i = 0; i < dim1; ++i) {
+    int32x4_t sum = vdupq_n_s32(0);
+
+    for (std::size_t j = 0; j < dim0; j += 8) {
+      // The x86 implementation packs to unsigned bytes, which is equivalent
+      // to clamp the int16 input to [0, 255]. Widen the int8 weights to int16
+      // so values 128..255 in the activation are handled correctly.
+      const int16x8_t x = vminq_s16(vmaxq_s16(zero, vld1q_s16(input + j)), max_value);
+      const int8x8_t w8 = vld1_s8(matrix + i * dim0 + j);
+      const int16x8_t w = vmovl_s8(w8);
+      const int16x8_t product = vmulq_s16(w, x);
+      sum = vaddq_s32(sum, vaddl_s16(vget_low_s16(product), vget_high_s16(product)));
+    }
+
+    output[i] += vaddvq_s32(sum);
+  }
+}
+
+#elif defined(__AVX2__)
 template <std::size_t dim>
 struct int16_add_x64 {
   static constexpr std::size_t num_units = 4;
