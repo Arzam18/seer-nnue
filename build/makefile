@@ -16,7 +16,10 @@ INCBIN = ../incbin
 SYZYGY = ../syzygy
 
 BASECXXFLAGS += -std=c++$(CXXSTANDARD)
-BASECXXFLAGS += -O3 -g -DNDEBUG -march=native -mtune=native -fopenmp
+ARCHFLAGS ?= -march=native -mtune=native
+OPENMPFLAGS ?= -fopenmp
+EXTRA_CXXFLAGS ?=
+BASECXXFLAGS += -O3 -g -DNDEBUG $(ARCHFLAGS) $(OPENMPFLAGS) $(EXTRA_CXXFLAGS)
 BASECXXFLAGS += -Wall -Wextra -pedantic
 BASECXXFLAGS += -fconstexpr-ops-limit=$(OPSLIMIT)
 BASECXXFLAGS += -DEVALFILE=\"$(EVALFILE)\"
