@@ -52,7 +52,7 @@ jobs:
             -o include/sse2neon.h
 
       # ============================================================
-      # PATCH SIMD HEADERS
+      # PATCH SIMD HEADERS FOR ARM
       # ============================================================
       - name: Patch SIMD headers for ARM
         run: |
@@ -109,7 +109,7 @@ jobs:
 
           make \
             CXX="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++" \
-            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -fconstexpr-steps=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic -march=armv8-a+simd -fopenmp-simd" \
+            CXXFLAGS="-std=c++17 -O3 -DNDEBUG -static-libstdc++ -fconstexpr-steps=1000000000 -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" -Wall -Wextra -pedantic -march=armv8-a+simd -fopenmp-simd" \
             LDFLAGS="" \
             2>&1 | tee ../seer-build.log
 
@@ -155,14 +155,43 @@ jobs:
           echo "ARM64 verification successful."
 
       # ============================================================
+      # VERIFY C++ RUNTIME
+      # ============================================================
+      - name: Verify libc++ is statically linked
+        run: |
+          set -e
+
+          echo "Checking dynamic dependencies..."
+          readelf -d build/seer | grep NEEDED || true
+
+          echo
+          echo "Checking for libc++_shared.so..."
+
+          if readelf -d build/seer | grep -q 'libc++_shared.so'; then
+            echo
+            echo "ERROR: Seer still requires libc++_shared.so"
+            echo "The binary will NOT be uploaded."
+            exit 1
+          fi
+
+          echo
+          echo "SUCCESS: libc++_shared.so is NOT required."
+          echo "Seer has a self-contained C++ runtime."
+
+      # ============================================================
       # PREPARE SINGLE-BINARY ARTIFACT
       # ============================================================
       - name: Prepare artifact
         run: |
+          set -e
+
           mkdir -p artifact
+
           cp build/seer artifact/seer
+
           chmod +x artifact/seer
 
+          echo "Final artifact:"
           ls -lh artifact/seer
 
       # ============================================================
