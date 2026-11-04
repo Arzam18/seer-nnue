@@ -20,6 +20,7 @@
 
 #include <cstddef>
 #include <cstdlib>
+#include <stdlib.h>
 #include <new>
 
 #if defined(__linux__)
@@ -39,7 +40,10 @@ constexpr std::size_t huge_page_size = std::size_t{1} << 21;
 #if defined(_WIN32)
   return _mm_malloc(padded_size, huge_page_size);
 #else
-  void* ptr = std::aligned_alloc(huge_page_size, padded_size);
+  void* ptr = nullptr;
+  if (::posix_memalign(&ptr, huge_page_size, padded_size) != 0) {
+    return nullptr;
+  }
 #if defined(__linux__) && defined(MADV_HUGEPAGE)
   if (ptr != nullptr) { madvise(ptr, padded_size, MADV_HUGEPAGE); }
 #endif
