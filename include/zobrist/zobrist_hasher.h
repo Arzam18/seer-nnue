@@ -52,7 +52,10 @@ struct zobrist_hasher_impl {
   [[nodiscard]] constexpr T compute_hash(F&& indicator_function) const noexcept {
     T hash = initial_hash_value;
 
+// Clang rejects OpenMP loop directives inside constexpr functions.
+#if !defined(__clang__)
 #pragma omp simd
+#endif
     for (std::size_t i = 0; i < N; ++i) {
       const T mask = static_cast<T>(indicator_function(i));
       hash ^= mask * detail::zobrist_hash_source<T, N>.data[i];
