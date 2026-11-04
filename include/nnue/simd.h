@@ -17,7 +17,11 @@
 
 #pragma once
 
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#elif defined(__AVX2__) || defined(__SSSE3__) || defined(_WIN32)
 #include <x86intrin.h>
+#endif
 
 #include <algorithm>
 #include <cstddef>
@@ -62,7 +66,9 @@ struct vector_128 {
 };
 #endif
 
-#if defined(__AVX2__)
+#if defined(__aarch64__) && defined(__ARM_NEON)
+constexpr std::size_t alignment = 16;
+#elif defined(__AVX2__)
 constexpr std::size_t alignment = vector_256::size;
 #elif defined(__SSSE3__)
 constexpr std::size_t alignment = vector_128::size;
@@ -144,6 +150,149 @@ template <std::size_t dim0, std::size_t dim1, typename T>
 inline void crelu255_matrix_layout(const T* matrix, T* result) noexcept {
   std::copy(matrix, matrix + dim0 * dim1, result);
 }
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+
+// Native AArch64 kernels. The generic implementations above remain the
+// fallback for unsupported types and any scalar tail elements.
+template <std::size_t dim>
+inline void add(std::int16_t* a, const std::int16_t* b) noexcept {
+  std::size_t i = 0;
+  for (; i + 8 <= dim; i += 8) {
+    vst1q_s16(a + i, vaddq_s16(vld1q_s16(a + i), vld1q_s16(b + i)));
+  }
+  for (; i < dim; ++i) { a[i] += b[i]; }
+}
+
+template <std::size_t dim>
+inline void sub(std::int16_t* a, const std::int16_t* b) noexcept {
+  std::size_t i = 0;
+  for (; i + 8 <= dim; i += 8) {
+    vst1q_s16(a + i, vsubq_s16(vld1q_s16(a + i), vld1q_s16(b + i)));
+  }
+  for (; i < dim; ++i) { a[i] -= b[i]; }
+}
+
+template <std::size_t dim>
+inline void add_add_sub(
+    const std::int16_t* a_0,
+    const std::int16_t* a_1,
+    const std::int16_t* s_0,
+    std::int16_t* out) noexcept {
+  std::size_t i = 0;
+  for (; i + 8 <= dim; i += 8) {
+    const int16x8_t a0 = vld1q_s16(a_0 + i);
+    const int16x8_t a1 = vld1q_s16(a_1 + i);
+    const int16x8_t s0 = vld1q_s16(s_0 + i);
+    vst1q_s16(out + i, vsubq_s16(vaddq_s16(a0, a1), s0));
+  }
+  for (; i < dim; ++i) { out[i] = a_0[i] + a_1[i] - s_0[i]; }
+}
+
+template <std::size_t dim>
+inline void add_add_sub_sub(
+    const std::int16_t* a_0,
+    const std::int16_t* a_1,
+    const std::int16_t* s_0,
+    const std::int16_t* s_1,
+    std::int16_t* out) noexcept {
+  std::size_t i = 0;
+  for (; i + 8 <= dim; i += 8) {
+    const int16x8_t a0 = vld1q_s16(a_0 + i);
+    const int16x8_t a1 = vld1q_s16(a_1 + i);
+    const int16x8_t s0 = vld1q_s16(s_0 + i);
+    const int16x8_t s1 = vld1q_s16(s_1 + i);
+    const int16x8_t d0 = vsubq_s16(a0, s0);
+    const int16x8_t d1 = vsubq_s16(a1, s1);
+    vst1q_s16(out + i, vaddq_s16(d0, d1));
+  }
+  for (; i < dim; ++i) { out[i] = a_0[i] - s_0[i] + a_1[i] - s_1[i]; }
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void relu_matrix_vector_product(const float* matrix, const float* input, float* output) noexcept {
+  const float32x4_t zero = vdupq_n_f32(0.0f);
+  for (std::size_t i = 0; i < dim1; ++i) {
+    float32x4_t sum = vdupq_n_f32(0.0f);
+    std::size_t j = 0;
+    for (; j + 4 <= dim0; j += 4) {
+      const float32x4_t x = vmaxq_f32(zero, vld1q_f32(input + j));
+      const float32x4_t w = vld1q_f32(matrix + i * dim0 + j);
+      sum = vaddq_f32(sum, vmulq_f32(w, x));
+    }
+    output[i] += vaddvq_f32(sum);
+    for (; j < dim0; ++j) { output[i] += std::max(input[j], 0.0f) * matrix[i * dim0 + j]; }
+  }
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void relu_matrix_vector_product(
+    const std::int16_t* matrix,
+    const std::int16_t* input,
+    std::int32_t* output) noexcept {
+  const int16x8_t zero = vdupq_n_s16(0);
+  for (std::size_t i = 0; i < dim1; ++i) {
+    int32x4_t sum = vdupq_n_s32(0);
+    std::size_t j = 0;
+    for (; j + 8 <= dim0; j += 8) {
+      const int16x8_t x = vmaxq_s16(zero, vld1q_s16(input + j));
+      const int16x8_t w = vld1q_s16(matrix + i * dim0 + j);
+      sum = vaddq_s32(sum, vmull_s16(vget_low_s16(w), vget_low_s16(x)));
+      sum = vaddq_s32(sum, vmull_s16(vget_high_s16(w), vget_high_s16(x)));
+    }
+    output[i] += vaddvq_s32(sum);
+    for (; j < dim0; ++j) {
+      output[i] += static_cast<std::int32_t>(std::max<std::int16_t>(input[j], 0)) *
+                   static_cast<std::int32_t>(matrix[i * dim0 + j]);
+    }
+  }
+}
+
+template <std::size_t dim0, std::size_t dim1>
+inline void crelu255_matrix_vector_product(
+    const std::int8_t* matrix,
+    const std::int16_t* input,
+    std::int32_t* output) noexcept {
+  const int16x8_t zero = vdupq_n_s16(0);
+  const int16x8_t max_value = vdupq_n_s16(255);
+
+  for (std::size_t i = 0; i < dim1; ++i) {
+    std::size_t j = 0;
+#if defined(__ARM_FEATURE_DOTPROD)
+    // SDOT accepts signed bytes. Reinterpret each unsigned activation as a
+    // signed byte, then add 256 * weight for lanes whose activation was >=128.
+    int32x4_t dot = vdupq_n_s32(0);
+    int32x4_t correction = vdupq_n_s32(0);
+    for (; j + 16 <= dim0; j += 16) {
+      const int16x8_t x0 = vminq_s16(vmaxq_s16(vld1q_s16(input + j), zero), max_value);
+      const int16x8_t x1 = vminq_s16(vmaxq_s16(vld1q_s16(input + j + 8), zero), max_value);
+      const uint8x16_t activation = vcombine_u8(vqmovun_s16(x0), vqmovun_s16(x1));
+      const int8x16_t signed_activation = vreinterpretq_s8_u8(activation);
+      const int8x16_t high_activation = vreinterpretq_s8_u8(vshrq_n_u8(activation, 7));
+      const int8x16_t weights = vld1q_s8(matrix + i * dim0 + j);
+      dot = vdotq_s32(dot, weights, signed_activation);
+      correction = vdotq_s32(correction, weights, high_activation);
+    }
+    const int32x4_t corrected = vaddq_s32(dot, vshlq_n_s32(correction, 8));
+    output[i] += vaddvq_s32(corrected);
+#else
+    int32x4_t sum = vdupq_n_s32(0);
+    for (; j + 8 <= dim0; j += 8) {
+      const int16x8_t x = vminq_s16(vmaxq_s16(vld1q_s16(input + j), zero), max_value);
+      const int16x8_t w = vmovl_s8(vld1_s8(matrix + i * dim0 + j));
+      const int16x8_t product = vmulq_s16(w, x);
+      sum = vaddq_s32(sum, vaddl_s16(vget_low_s16(product), vget_high_s16(product)));
+    }
+    output[i] += vaddvq_s32(sum);
+#endif
+    for (; j < dim0; ++j) {
+      const std::int32_t activation = std::min<std::int32_t>(std::max<std::int32_t>(input[j], 0), 255);
+      output[i] += activation * static_cast<std::int32_t>(matrix[i * dim0 + j]);
+    }
+  }
+}
+
+#endif  // AArch64 NEON
 
 #if defined(__AVX2__)
 template <std::size_t dim>
