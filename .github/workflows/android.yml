@@ -1,0 +1,159 @@
+name: Seer Android ARM64 NEON + Dotprod
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Seer for Android ARM64 NEON + Dotprod
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Android NDK r27c
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          NDK_ARCHIVE="android-ndk-r27c-linux.zip"
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://dl.google.com/android/repository/${NDK_ARCHIVE}" \
+            --output "$NDK_ARCHIVE"
+
+          unzip -q "$NDK_ARCHIVE"
+          rm -f "$NDK_ARCHIVE"
+
+          NDK_PATH="$GITHUB_WORKSPACE/android-ndk-r27c"
+          CXX="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
+
+          if [ ! -x "$CXX" ]; then
+            echo "ERROR: Android NDK C++ compiler was not found: $CXX"
+            exit 1
+          fi
+
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ANDROID_CXX=$CXX" >> "$GITHUB_ENV"
+
+          "$CXX" --version
+
+      - name: Download Seer NNUE network
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p build/weights
+          curl --fail --location --retry 3 --retry-delay 2 \
+            "https://github.com/connormcmonigle/seer-training/releases/download/0x2291e0ff/q0x2291e0ff.bin" \
+            --output build/weights/q0x2291e0ff.bin
+
+          test -s build/weights/q0x2291e0ff.bin
+          echo "NNUE network downloaded:"
+          ls -lh build/weights/q0x2291e0ff.bin
+
+      - name: Verify ARM64 NEON and Dotprod compiler support
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BASELINE_MACROS="$(printf '' | "$ANDROID_CXX" \
+            -march=armv8-a+simd -dM -E -x c++ -)"
+          DOTPROD_MACROS="$(printf '' | "$ANDROID_CXX" \
+            -march=armv8.2-a+dotprod -dM -E -x c++ -)"
+
+          if ! grep -q '^#define __aarch64__' <<< "$BASELINE_MACROS"; then
+            echo "ERROR: Compiler is not targeting AArch64"
+            exit 1
+          fi
+          if ! grep -q '^#define __ARM_NEON' <<< "$BASELINE_MACROS"; then
+            echo "ERROR: Baseline ARM64 compiler does not enable NEON"
+            exit 1
+          fi
+          if ! grep -q '^#define __ARM_FEATURE_DOTPROD' <<< "$DOTPROD_MACROS"; then
+            echo "ERROR: Compiler does not enable ARM Dotprod"
+            exit 1
+          fi
+
+          echo "AArch64 NEON and Dotprod compiler features are enabled."
+
+      - name: Build Seer Android ARM64 NEON and Dotprod variants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMMON_CXXFLAGS="-std=c++17 -O3 -DNDEBUG -mtune=cortex-a76 -fPIE \
+            -fconstexpr-steps=1000000000 \
+            -DEVALFILE=\\\"weights/q0x2291e0ff.bin\\\" \
+            -Wall -Wextra -pedantic -fopenmp-simd"
+          LDFLAGS="-pthread -static-libstdc++ -pie"
+          OBJDUMP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-objdump"
+
+          mkdir -p artifact
+
+          for VARIANT in neon dotprod; do
+            if [ "$VARIANT" = "neon" ]; then
+              ARCHFLAGS="-march=armv8-a+simd"
+            else
+              ARCHFLAGS="-march=armv8.2-a+dotprod"
+            fi
+
+            echo "Building Seer variant: $VARIANT"
+            make -C build clean
+            rm -f build/seer
+
+            make -C build -j2 binary \
+              CXX="$ANDROID_CXX" \
+              EXE=seer \
+              CXXFLAGS="$COMMON_CXXFLAGS $ARCHFLAGS" \
+              LDFLAGS="$LDFLAGS"
+
+            BIN="build/seer"
+            OUT="artifact/seer-android-arm64-$VARIANT"
+            test -s "$BIN"
+            readelf -h "$BIN" | grep -q 'AArch64'
+
+            if readelf -d "$BIN" | grep -q 'libc++_shared.so'; then
+              echo "ERROR: $VARIANT binary depends on libc++_shared.so"
+              exit 1
+            fi
+
+            if [ "$VARIANT" = "dotprod" ]; then
+              "$OBJDUMP" -d "$BIN" > /tmp/seer-dotprod-disassembly.txt
+              if ! grep -Eiq '[[:space:]]sdot[[:space:]]' /tmp/seer-dotprod-disassembly.txt; then
+                echo "ERROR: Dotprod build does not contain an SDOT instruction"
+                exit 1
+              fi
+              echo "SDOT instruction verified."
+            fi
+
+            cp "$BIN" "$OUT"
+            chmod +x "$OUT"
+            file "$OUT"
+            ls -lh "$OUT"
+          done
+
+          echo "Both Android ARM64 variants built and verified."
+
+      - name: Upload Android ARM64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: seer-android-arm64-neon-dotprod
+          path: artifact/seer-android-arm64-*
+          if-no-files-found: error
+
+      - name: Create prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: android-build-${{ github.run_number }}
+          name: Seer Android ARM64 NEON + Dotprod Build ${{ github.run_number }}
+          prerelease: true
+          files: artifact/seer-android-arm64-*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
